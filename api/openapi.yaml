@@ -1,0 +1,632 @@
+openapi: 3.0.3
+info:
+  title: Selfhost Portal API
+  version: 0.1.0
+  description: |
+    Backend/Frontend 공통 계약. 변경은 Orchestrator가 병합한다 (AGENTS.md §2).
+    - 인증: 세션 쿠키(HttpOnly). 상태 변경 요청은 X-XSRF-TOKEN 헤더 필수.
+    - 에러: application/problem+json (RFC 7807).
+    - 시간: ISO-8601 UTC.
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+tags:
+  - name: auth
+  - name: services
+  - name: containers
+  - name: metrics
+  - name: alerts
+  - name: audit
+  - name: stream
+
+paths:
+  /health:
+    get:
+      tags: [auth]
+      summary: 포털 자체 헬스 (인증 불필요, 최소 정보)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [UP] }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 로그인 (2단계 필요 시 mfaRequired 반환)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 성공 또는 2FA 필요
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /auth/login/mfa:
+    post:
+      tags: [auth]
+      summary: TOTP 코드 확인 (로그인 2단계)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '200':
+          description: 로그인 완료
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: 로그아웃
+      responses:
+        '204': { description: 완료 }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: 현재 사용자
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Problem' }
+
+  /auth/password:
+    put:
+      tags: [auth]
+      summary: 비밀번호 변경
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 12 }
+      responses:
+        '204': { description: 완료 }
+        '400': { $ref: '#/components/responses/Problem' }
+
+  /auth/mfa/setup:
+    post:
+      tags: [auth]
+      summary: TOTP 등록 시작 (시크릿/otpauth URI 반환)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [otpauthUri]
+                properties:
+                  otpauthUri: { type: string }
+  /auth/mfa/enable:
+    post:
+      tags: [auth]
+      summary: 코드 검증 후 TOTP 활성화 (복구 코드 1회 반환)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items: { type: string }
+
+  /services:
+    get:
+      tags: [services]
+      summary: 서비스 목록 + 현재 상태
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServiceWithState' }
+    post:
+      tags: [services]
+      summary: 서비스 등록 (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '201':
+          description: 생성됨
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceWithState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /services/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [services]
+      summary: 서비스 상세
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceWithState' }
+        '404': { $ref: '#/components/responses/Problem' }
+    put:
+      tags: [services]
+      summary: 서비스 수정 (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceWithState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [services]
+      summary: 서비스 삭제 (ADMIN)
+      responses:
+        '204': { description: 삭제됨 }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /services/{id}/history:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: from, in: query, schema: { type: string, format: date-time } }
+      - { name: to, in: query, schema: { type: string, format: date-time } }
+    get:
+      tags: [services]
+      summary: 헬스체크 이력
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/HealthResult' }
+
+  /containers:
+    get:
+      tags: [containers]
+      summary: 컨테이너 목록 (allowlist 대상 여부 포함)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Container' }
+
+  /containers/{name}/{action}:
+    parameters:
+      - { name: name, in: path, required: true, schema: { type: string } }
+      - name: action
+        in: path
+        required: true
+        schema: { type: string, enum: [start, stop, restart] }
+    post:
+      tags: [containers]
+      summary: 컨테이너 제어 (ADMIN, allowlist만)
+      responses:
+        '200':
+          description: 수행 결과
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Container' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /metrics/current:
+    get:
+      tags: [metrics]
+      summary: 현재 시스템 지표
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricSample' }
+
+  /metrics/series:
+    get:
+      tags: [metrics]
+      summary: 지표 시계열
+      parameters:
+        - { name: range, in: query, schema: { type: string, enum: [15m, 1h, 6h, 24h, 7d], default: 1h } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MetricSample' }
+
+  /alerts/rules:
+    get:
+      tags: [alerts]
+      summary: 규칙 목록 (ADMIN)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertRule' }
+    post:
+      tags: [alerts]
+      summary: 규칙 생성 (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertRuleInput' }
+      responses:
+        '201':
+          description: 생성됨
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+  /alerts/channels:
+    get:
+      tags: [alerts]
+      summary: 채널 목록 (비밀값은 마스킹)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertChannel' }
+    post:
+      tags: [alerts]
+      summary: 채널 생성 (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertChannelInput' }
+      responses:
+        '201':
+          description: 생성됨
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertChannel' }
+  /alerts/channels/{id}/test:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [alerts]
+      summary: 테스트 메시지 발송
+      responses:
+        '204': { description: 발송됨 }
+        '502': { $ref: '#/components/responses/Problem' }
+  /alerts/events:
+    get:
+      tags: [alerts]
+      summary: 알림 이력
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertEventPage' }
+
+  /audit:
+    get:
+      tags: [audit]
+      summary: 감사 로그 (ADMIN)
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: actor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditPage' }
+
+  /stream:
+    get:
+      tags: [stream]
+      summary: SSE 스트림
+      description: |
+        `text/event-stream`. 이벤트 이름과 data(JSON) 형식:
+        - `service.state`   → ServiceState
+        - `metrics.sample`  → MetricSample
+        - `alert.fired`     → AlertEvent
+        - `alert.resolved`  → AlertEvent
+        - `container.action`→ { name, action, result, at }
+        하트비트: 20초마다 주석 라인(`: ping`).
+      responses:
+        '200':
+          description: 이벤트 스트림
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: PORTAL_SESSION
+
+  responses:
+    Problem:
+      description: 오류 (RFC 7807)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string, description: '기계 판독용 에러 코드 (예: AUTH_INVALID, RATE_LIMITED, NOT_ALLOWLISTED)' }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, maxLength: 64 }
+        password: { type: string, format: password, maxLength: 256 }
+
+    LoginResponse:
+      type: object
+      required: [mfaRequired]
+      properties:
+        mfaRequired: { type: boolean }
+        me: { $ref: '#/components/schemas/Me' }
+
+    Me:
+      type: object
+      required: [username, role, mfaEnabled]
+      properties:
+        username: { type: string }
+        role: { type: string, enum: [ADMIN, VIEWER] }
+        mfaEnabled: { type: boolean }
+
+    Status:
+      type: string
+      enum: [UP, DOWN, DEGRADED, UNKNOWN]
+
+    CheckType:
+      type: string
+      enum: [HTTP, TCP, DOCKER]
+
+    ServiceInput:
+      type: object
+      required: [slug, name, urlInternal, category, checkType, checkTarget]
+      properties:
+        slug: { type: string, pattern: '^[a-z0-9-]{2,40}$' }
+        name: { type: string, maxLength: 80 }
+        description: { type: string, maxLength: 300 }
+        urlInternal: { type: string, format: uri }
+        urlPublic: { type: string, format: uri, nullable: true }
+        icon: { type: string, maxLength: 200, description: '아이콘 이름 또는 http(s) URL' }
+        category: { type: string, maxLength: 40 }
+        checkType: { $ref: '#/components/schemas/CheckType' }
+        checkTarget: { type: string, maxLength: 300 }
+        checkIntervalSeconds: { type: integer, minimum: 10, maximum: 3600, default: 30 }
+        timeoutMs: { type: integer, minimum: 200, maximum: 30000, default: 3000 }
+        containerName: { type: string, nullable: true }
+        controllable: { type: boolean, default: false }
+        publicVisible: { type: boolean, default: false }
+        sortOrder: { type: integer, default: 0 }
+
+    Service:
+      allOf:
+        - $ref: '#/components/schemas/ServiceInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+
+    ServiceState:
+      type: object
+      required: [serviceId, status, since]
+      properties:
+        serviceId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/Status' }
+        since: { type: string, format: date-time }
+        latencyMs: { type: integer, nullable: true }
+        detail: { type: string, nullable: true }
+
+    ServiceWithState:
+      allOf:
+        - $ref: '#/components/schemas/Service'
+        - type: object
+          required: [state]
+          properties:
+            state: { $ref: '#/components/schemas/ServiceState' }
+
+    HealthResult:
+      type: object
+      required: [checkedAt, status]
+      properties:
+        checkedAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/Status' }
+        latencyMs: { type: integer, nullable: true }
+        detail: { type: string, nullable: true }
+
+    Container:
+      type: object
+      required: [name, image, state, controllable]
+      properties:
+        name: { type: string }
+        image: { type: string }
+        state: { type: string, enum: [running, exited, restarting, paused, created, dead] }
+        health: { type: string, enum: [healthy, unhealthy, starting, none] }
+        uptimeSeconds: { type: integer, nullable: true }
+        memoryMb: { type: number, nullable: true }
+        controllable:
+          type: boolean
+          description: 서비스 allowlist에 포함되어 포털에서 제어 가능한지
+
+    MetricSample:
+      type: object
+      required: [ts, cpuPercent, memUsedMb, memTotalMb, diskUsedGb, diskTotalGb]
+      properties:
+        ts: { type: string, format: date-time }
+        cpuPercent: { type: number }
+        memUsedMb: { type: number }
+        memTotalMb: { type: number }
+        diskUsedGb: { type: number }
+        diskTotalGb: { type: number }
+        tempC: { type: number, nullable: true }
+
+    AlertRuleInput:
+      type: object
+      required: [type, threshold]
+      properties:
+        type: { type: string, enum: [SERVICE_DOWN, CPU_TEMP, DISK_USAGE, MEM_USAGE] }
+        targetServiceId: { type: string, format: uuid, nullable: true }
+        threshold: { type: number }
+        forSeconds: { type: integer, minimum: 0, default: 60 }
+        cooldownSeconds: { type: integer, minimum: 60, default: 900 }
+        enabled: { type: boolean, default: true }
+
+    AlertRule:
+      allOf:
+        - $ref: '#/components/schemas/AlertRuleInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+
+    AlertChannelInput:
+      type: object
+      required: [type, config]
+      properties:
+        type: { type: string, enum: [TELEGRAM, DISCORD, WEBHOOK] }
+        config:
+          type: object
+          additionalProperties: { type: string }
+          description: 쓰기 전용. 응답에서는 마스킹된다.
+        enabled: { type: boolean, default: true }
+
+    AlertChannel:
+      type: object
+      required: [id, type, enabled, configMasked]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [TELEGRAM, DISCORD, WEBHOOK] }
+        enabled: { type: boolean }
+        configMasked:
+          type: object
+          additionalProperties: { type: string }
+
+    AlertEvent:
+      type: object
+      required: [id, ruleId, firedAt, message]
+      properties:
+        id: { type: string, format: uuid }
+        ruleId: { type: string, format: uuid }
+        firedAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        message: { type: string }
+
+    AlertEventPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AlertEvent' }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer }
+
+    AuditEntry:
+      type: object
+      required: [id, ts, actor, action, result]
+      properties:
+        id: { type: string, format: uuid }
+        ts: { type: string, format: date-time }
+        actor: { type: string }
+        ip: { type: string }
+        action: { type: string, description: '예: LOGIN_SUCCESS, LOGIN_FAILURE, CONTAINER_RESTART, SERVICE_CREATE' }
+        target: { type: string, nullable: true }
+        result: { type: string, enum: [SUCCESS, FAILURE, DENIED] }
+        detail: { type: string, nullable: true }
+
+    AuditPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer }

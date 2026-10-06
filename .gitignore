@@ -1,0 +1,15 @@
+# secrets
+.env
+*.env
+!.env.example
+*.pem
+*.key
+secrets/
+# build
+backend/build/
+backend/.gradle/
+frontend/node_modules/
+frontend/dist/
+# local
+.DS_Store
+*.log
